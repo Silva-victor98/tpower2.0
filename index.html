@@ -1100,7 +1100,7 @@ async function getFinalImageUrl() {
         showToast(`✅ ${totalFiles} foto${totalFiles > 1 ? 's adicionadas' : ' adicionada'} com sucesso!`, 'success');
       } catch (err) {
         console.error(err);
-        showToast('❌ Falha ao enviar para o Cloudinary. Verifique o preset UNSIGNED e tente novamente.', 'error');
+        showToast(`❌ Cloudinary: ${err?.message || 'Falha desconhecida'}`, 'error');
       } finally {      }
     }
 
