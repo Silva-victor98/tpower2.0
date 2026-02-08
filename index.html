@@ -565,22 +565,29 @@ if (img && localStorage.getItem("foto_principal")) {
       document.getElementById('loginError').classList.add('hidden');
     }
 
-    document.getElementById('adminLoginForm').addEventListener('submit', function(e) {
-      e.preventDefault();
-      
-      const username = document.getElementById('admin_username').value;
-      const password = document.getElementById('admin_password').value;
-      
-      if (username === ADMIN_USER && password === ADMIN_PASS) {
-        closeAdminLogin();
-        loadAdminPanel();
+    document.addEventListener('DOMContentLoaded', () => {
+      const adminLoginForm = document.getElementById('adminLoginForm');
+      if (adminLoginForm) {
+        adminLoginForm.addEventListener('submit', function(e) {
+          e.preventDefault();
+
+          const username = document.getElementById('admin_username')?.value || '';
+          const password = document.getElementById('admin_password')?.value || '';
+
+          if (username === ADMIN_USER && password === ADMIN_PASS) {
+            closeAdminLogin();
+            loadAdminPanel();
+          } else {
+            const errorDiv = document.getElementById('loginError');
+            if (errorDiv) {
+              errorDiv.classList.remove('hidden');
+              errorDiv.classList.add('shake');
+              setTimeout(() => errorDiv.classList.remove('shake'), 500);
+            }
+          }
+        });
       } else {
-        const errorDiv = document.getElementById('loginError');
-        errorDiv.classList.remove('hidden');
-        errorDiv.classList.add('shake');
-        setTimeout(() => {
-          errorDiv.classList.remove('shake');
-        }, 500);
+        console.warn('[Admin] adminLoginForm não encontrado no DOM.');
       }
     });
 
