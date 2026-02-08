@@ -887,24 +887,22 @@ if (img && localStorage.getItem("foto_principal")) {
       // NÃO recarregar o painel - mantém o estado atual
     }
 // Upload de imagem para Cloudinary
-async function uploadImageToCloudinary(file) {
-  // ⚠️ Requer um "Upload Preset" UNSIGNED criado no Cloudinary (Settings → Upload → Upload presets)
-  // Troque CLOUDINARY_CLOUD_NAME e CLOUDINARY_UPLOAD_PRESET se os seus forem diferentes.
+async async function uploadImageToCloudinary(file) {
+  // Requer um Upload Preset UNSIGNED no Cloudinary
   const CLOUDINARY_CLOUD_NAME = "daelkgz3x";
   const CLOUDINARY_UPLOAD_PRESET = "tpowermotos";
 
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("upload_preset", tpowermotos);
+  formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
 
   const response = await fetch(
-    `https://api.cloudinary.com/v1_1/daelkgz3x/image/upload`,
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
     { method: "POST", body: formData }
   );
 
   const data = await response.json();
 
-  // Tratativa de erro bem clara no console
   if (!response.ok || !data.secure_url) {
     console.error("Cloudinary upload falhou:", data);
     throw new Error(data?.error?.message || "Falha no upload para o Cloudinary.");
@@ -1055,10 +1053,10 @@ async function getFinalImageUrl() {
       currentMotoId = null;
     }
 
-    async function addPhotoFromFile() {
+    async async function addPhotoFromFile() {
       const fileInput = document.getElementById('photoFileInput');
       const files = fileInput.files;
-      
+
       if (!files || files.length === 0) {
         showToast('Por favor, selecione pelo menos um arquivo', 'error');
         return;
@@ -1076,39 +1074,35 @@ async function getFinalImageUrl() {
         photosStorage[currentMotoId] = [];
       }
 
-      let processedCount = 0;
+      let uploaded = 0;
       const totalFiles = files.length;
 
-      // Processar cada arquivo
-      Array.from(files).forEach((file) => {
-        const reader = new FileReader();
-        reader.onload = async function(e) {
-          const dataUrl = e.target.result;
-          
+      try {
+        for (const file of Array.from(files)) {
+          // Upload REAL para o Cloudinary (retorna uma URL https)
+          const url = await uploadImageToCloudinary(file);
+
           photosStorage[currentMotoId].push({
             id: Date.now() + Math.random(),
-            url: dataUrl,
-            type: 'local'
+            url: url,
+            type: 'cloudinary'
           });
 
-          processedCount++;
-          
-          // Quando todas as fotos forem processadas
-          if (processedCount === totalFiles) {
-            fileInput.value = '';
-            
-            // Salvar no banco de dados
-            await saveToSDK(currentMotoId, 'photos', photosStorage[currentMotoId]);
-            
-            // Atualizar APENAS a lista de fotos, não o layout inteiro
-            renderPhotosList();
-            updateAdminPanelCounters();
-            showToast(`✅ ${totalFiles} foto${totalFiles > 1 ? 's adicionadas' : ' adicionada'} com sucesso!`, 'success');
-          }
-        };
-        
-        reader.readAsDataURL(file);
-      });
+          uploaded++;
+        }
+
+        fileInput.value = '';
+
+        // Salvar somente URLs (leve) — evita estourar quota do navegador
+        await saveToSDK(currentMotoId, 'photos', photosStorage[currentMotoId]);
+
+        renderPhotosList();
+        updateAdminPanelCounters();
+        showToast(`✅ ${uploaded} foto${uploaded > 1 ? 's' : ''} enviada${uploaded > 1 ? 's' : ''} para o Cloudinary!`, 'success');
+      } catch (err) {
+        console.error(err);
+        showToast(`❌ ${err?.message || 'Falha ao enviar fotos.'}`, 'error');
+      }
     }
 
     async function addPhotoFromUrl() {
@@ -1476,6 +1470,12 @@ async function getFinalImageUrl() {
         return true;
       } catch (e) {
         console.error('saveToSDK failed:', e);
+        // Mensagem clara quando estoura o limite do navegador (quota)
+        if (e && (e.name === 'QuotaExceededError' || String(e).includes('QuotaExceededError'))) {
+          showToast('❌ Seu navegador ficou sem espaço para salvar (quota). Isso acontece quando fotos ficam em base64. Eu ajustei para salvar só URLs, mas você precisa limpar o armazenamento antigo: abra o site, aperte F12 → Application → Local Storage → apague as chaves tpowermotos:* (ou limpe dados do site) e tente de novo.', 'error');
+        } else {
+          showToast(`❌ Falha ao salvar dados: ${e?.message || e}`, 'error');
+        }
         throw e;
       }
     }
