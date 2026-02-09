@@ -1078,7 +1078,16 @@ function getFinalImageUrl() {
       `;
       
       modal.classList.remove('hidden');
-      renderPhotosList();
+      
+      // Carrega fotos persistidas (URLs) antes de renderizar
+      loadFromSDK(currentMotoId, 'photos', []).then(function(saved) {
+        if (Array.isArray(saved)) {
+          photosStorage[currentMotoId] = saved;
+        } else if (!photosStorage[currentMotoId]) {
+          photosStorage[currentMotoId] = [];
+        }
+        renderPhotosList();
+      });
     }
 
     function closePhotoManager() {
