@@ -557,6 +557,12 @@ if (img && localStorage.getItem("foto_principal")) {
 var BACKENDLESS_APP_ID = "EADDB868-2712-430C-B386-3488057173BE";
 var BACKENDLESS_JS_API_KEY = "8148EBB0-CA60-4F8E-A553-C3BEBA21AE47";
 var __backendlessReady = false;
+var __sdkCache = {};           // key -> {ts:number, value:any}
+var __sdkObjId = {};           // key -> objectId
+var __sdkInFlight = {};        // key -> Promise
+var __sdkCacheTTL = 30000;     // 30s cache para não estourar rate limit
+var __sdkLast429 = 0;          // timestamp do último 429
+
 
 function ensureBackendless() {
   if (__backendlessReady) return true;
@@ -585,54 +591,124 @@ function _whereClause(motoId, dataType) {
 function saveToSDK(motoId, dataType, value) {
   return new Promise(function(resolve, reject) {
     if (!ensureBackendless()) return reject(new Error('Backendless não inicializado'));
-    var table = Backendless.Data.of("Motos");
-    var whereClause = _whereClause(motoId, dataType);
 
+    var key = String(motoId) + ':' + String(dataType);
+    var table = Backendless.Data.of("Motos");
+
+    // Se já sabemos o objectId, fazemos save direto (1 request)
+    if (__sdkObjId[key]) {
+      table.save({
+        objectId: __sdkObjId[key],
+        moto_id: String(motoId),
+        data_type: String(dataType),
+        data_json: JSON.stringify(value)
+      }).then(function(saved) {
+        __sdkCache[key] = { ts: Date.now(), value: value };
+        resolve(saved);
+      }).catch(function(err) {
+        reject(err);
+      });
+      return;
+    }
+
+    // Caso contrário, 1x find para descobrir objectId e depois save
+    var whereClause = _whereClause(motoId, dataType);
     table.find({ whereClause: whereClause, pageSize: 1 })
       .then(function(list) {
         var payload = {
           moto_id: String(motoId),
           data_type: String(dataType),
-          data_json: JSON.stringify(value || null)
+          data_json: JSON.stringify(value)
         };
-
-        if (list && list.length) {
-          payload.objectId = list[0].objectId; // update
+        if (list && list.length && list[0].objectId) {
+          payload.objectId = list[0].objectId;
         }
         return table.save(payload);
       })
-      .then(function() { resolve(true); })
+      .then(function(saved) {
+        if (saved && saved.objectId) __sdkObjId[key] = saved.objectId;
+        __sdkCache[key] = { ts: Date.now(), value: value };
+        resolve(saved);
+      })
       .catch(function(err) {
-        console.error('saveToSDK (Backendless) failed:', err);
+        console.error('saveToSDK failed:', err);
         reject(err);
       });
   });
 }
 
+
 function loadFromSDK(motoId, dataType, fallback) {
   return new Promise(function(resolve, reject) {
     if (!ensureBackendless()) return resolve(fallback);
+
+    var key = String(motoId) + ':' + String(dataType);
+
+    // Cache (evita bater no limite)
+    var cached = __sdkCache[key];
+    if (cached && (Date.now() - cached.ts) < __sdkCacheTTL) {
+      return resolve(cached.value);
+    }
+
+    // Se já tem request em andamento para essa chave, reutiliza
+    if (__sdkInFlight[key]) {
+      return __sdkInFlight[key].then(resolve).catch(function(e){ resolve(fallback); });
+    }
+
+    // Se acabou de tomar 429, não spammar: devolve fallback por 60s
+    if (__sdkLast429 && (Date.now() - __sdkLast429) < 60000) {
+      return resolve(fallback);
+    }
+
     var table = Backendless.Data.of("Motos");
     var whereClause = _whereClause(motoId, dataType);
 
-    table.find({ whereClause: whereClause, pageSize: 1 })
+    var p = table.find({ whereClause: whereClause, pageSize: 1 })
       .then(function(list) {
-        if (!list || !list.length) return resolve(fallback);
+        delete __sdkInFlight[key];
+
+        if (!list || !list.length) {
+          __sdkCache[key] = { ts: Date.now(), value: fallback };
+          return fallback;
+        }
+
+        if (list[0].objectId) __sdkObjId[key] = list[0].objectId;
+
         var raw = list[0].data_json;
-        if (!raw) return resolve(fallback);
+        if (!raw) {
+          __sdkCache[key] = { ts: Date.now(), value: fallback };
+          return fallback;
+        }
+
         try {
-          resolve(JSON.parse(raw));
+          var parsed = JSON.parse(raw);
+          __sdkCache[key] = { ts: Date.now(), value: parsed };
+          return parsed;
         } catch (e) {
-          console.error('loadFromSDK parse failed:', e);
-          resolve(fallback);
+          console.error('loadFromSDK JSON parse failed:', e);
+          __sdkCache[key] = { ts: Date.now(), value: fallback };
+          return fallback;
         }
       })
       .catch(function(err) {
+        delete __sdkInFlight[key];
+
+        // Backendless 429 (limite)
+        if (err && (err.statusCode === 429 || (String(err.message || '').indexOf('Maximum request per minute') >= 0))) {
+          __sdkLast429 = Date.now();
+          console.warn('Backendless rate limit (429). Aguardando reset do limite.');
+          return fallback;
+        }
+
         console.error('loadFromSDK (Backendless) failed:', err);
-        resolve(fallback); // não derruba o painel
+        return fallback;
       });
+
+    __sdkInFlight[key] = p;
+    p.then(resolve).catch(function(){ resolve(fallback); });
   });
 }
+
 
 const thumbnailStorage = {};
     const motoDataStorage = {};
@@ -691,10 +767,10 @@ const thumbnailStorage = {};
 
     // Função para obter dados da moto (prioriza storage, depois database)
     function getMotoData(motoId) {
-      // Sempre retorna uma combinação segura: padrão + sobrescritas do admin
-      const base = motosDatabase[motoId] || {};
-      const override = motoDataStorage[motoId] || {};
-      return Object.assign({}, base, override);
+      if (motoDataStorage[motoId]) {
+        return motoDataStorage[motoId];
+      }
+      return motosDatabase[motoId];
     }
 
     // Renderizar cards das motos
@@ -2012,51 +2088,10 @@ function saveMoto() {
       showAdminLogin();
     }
 
-    // Pré-carregar dados persistidos do Backendless (sem quebrar o site se falhar)
-    function preloadPersistedData() {
-      const motoIds = Object.keys(motosDatabase || {});
-      const jobs = [];
-
-      motoIds.forEach(function(id) {
-        // Dados da moto (editor)
-        jobs.push(
-          loadFromSDK(id, 'moto_data', null).then(function(savedMoto) {
-            if (savedMoto && typeof savedMoto === 'object') {
-              motoDataStorage[id] = Object.assign({}, motosDatabase[id] || {}, savedMoto);
-            }
-          })
-        );
-
-        // Thumbnail
-        jobs.push(
-          loadFromSDK(id, 'thumbnail', null).then(function(savedThumb) {
-            if (typeof savedThumb === 'string' && savedThumb.startsWith('http')) {
-              thumbnailStorage[id] = savedThumb;
-            }
-          })
-        );
-      });
-
-      return Promise.allSettled(jobs);
-    }
-
-    function initApp() {
-      preloadPersistedData()
-        .then(function() {
-          renderMotoCards();
-          showPage(0);
-        })
-        .catch(function(err) {
-          console.error('preloadPersistedData failed:', err);
-          // Mesmo se falhar, o site precisa renderizar
-          renderMotoCards();
-          showPage(0);
-        });
-    }
-
-    // Inicializar (garante que o DOM já existe; o script vem antes do botão do cadeado)
-    initApp();
-
+    // Inicializar
+    renderMotoCards();
+    showPage(0);
+  
 </script>
 <!-- Botão Cadeado (Admin) -->
   <button id="adminLockBtn"
