@@ -8,7 +8,7 @@
   <link rel="shortcut icon" type="image/png" href="https://i.imgur.com/FyCqY2d.png">
   <link rel="apple-touch-icon" href="https://i.imgur.com/FyCqY2d.png">
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://api.backendless.com/sdk/js/latest/backendless.min.js"></script>
+  <script src="https://api.backendless.com/sdk/js/latest/backendless.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
   <style>
     body {
@@ -550,108 +550,90 @@ if (img && localStorage.getItem("foto_principal")) {
     // Storage de fotos, miniaturas e dados editados
     const photosStorage = {};
 
-    // Persistência (DE VERDADE) via Backendless
-    // Guarda APENAS URLs (ex.: Cloudinary) e dados em JSON. Nunca base64.
-    const BACKENDLESS_APP_ID = 'EADDB868-2712-430C-B386-3488057173BE';
-    const BACKENDLESS_JS_KEY = '8148EBB0-CA60-4F8E-A553-C3BEBA21AE47';
-    const BACKENDLESS_TABLE = 'Motos'; // Cria automaticamente ao salvar (se permitido)
+    // Persistência simples (para o site funcionar no GitHub Pages sem servidor)
+    // Salva APENAS URLs (ex.: Cloudinary), nunca base64.
+    // Persistência REAL: grava e lê do Backendless (tabela "Motos").
+// A foto fica no Cloudinary; aqui a gente salva só a URL (string) e metadados.
+var BACKENDLESS_APP_ID = "EADDB868-2712-430C-B386-3488057173BE";
+var BACKENDLESS_JS_API_KEY = "8148EBB0-CA60-4F8E-A553-C3BEBA21AE47";
+var __backendlessReady = false;
 
-    function _sdkKey(motoId, dataType) {
-      return 'tpowermotos:' + String(motoId) + ':' + String(dataType);
-    }
+function ensureBackendless() {
+  if (__backendlessReady) return true;
+  if (typeof Backendless === 'undefined') {
+    console.error('Backendless SDK não carregou. Confira o <script src="https://api.backendless.com/sdk/js/latest/backendless.js"></script>');
+    return false;
+  }
+  try {
+    Backendless.initApp(BACKENDLESS_APP_ID, BACKENDLESS_JS_API_KEY);
+    __backendlessReady = true;
+    return true;
+  } catch (e) {
+    console.error('Falha ao inicializar Backendless:', e);
+    return false;
+  }
+}
 
-    function _ensureBackendless() {
-      try {
-        if (window.Backendless && !window.__tpowerBackendlessInited) {
-          Backendless.initApp(BACKENDLESS_APP_ID, BACKENDLESS_JS_KEY);
-          window.__tpowerBackendlessInited = true;
-        }
-      } catch (e) {
-        console.warn('Backendless init failed (fallback localStorage):', e);
-      }
-    }
+function _escapeWhereValue(v) {
+  return String(v).replace(/'/g, "''");
+}
 
-    function _escWhere(v) {
-      return String(v).replace(/'/g, "\\'");
-    }
+function _whereClause(motoId, dataType) {
+  return "moto_id='" + _escapeWhereValue(motoId) + "' AND data_type='" + _escapeWhereValue(dataType) + "'";
+}
 
-    function _localSave(motoId, dataType, value) {
-      localStorage.setItem(_sdkKey(motoId, dataType), JSON.stringify(value));
-      return true;
-    }
+function saveToSDK(motoId, dataType, value) {
+  return new Promise(function(resolve, reject) {
+    if (!ensureBackendless()) return reject(new Error('Backendless não inicializado'));
+    var table = Backendless.Data.of("Motos");
+    var whereClause = _whereClause(motoId, dataType);
 
-    function _localLoad(motoId, dataType, fallback) {
-      var raw = localStorage.getItem(_sdkKey(motoId, dataType));
-      if (!raw) return fallback;
-      return JSON.parse(raw);
-    }
-
-    // Salva no Backendless e faz fallback pro localStorage se der algum problema.
-    function saveToSDK(motoId, dataType, value) {
-      _ensureBackendless();
-
-      // Se Backendless não carregou, usa localStorage.
-      if (!window.Backendless || !Backendless.Data) {
-        try { _localSave(motoId, dataType, value); return Promise.resolve(true); }
-        catch (e) { console.error('saveToSDK localStorage failed:', e); return Promise.reject(e); }
-      }
-
-      var store = Backendless.Data.of(BACKENDLESS_TABLE);
-      var where = "moto_id = '" + _escWhere(motoId) + "' AND data_type = '" + _escWhere(dataType) + "'";
-
-      return store.findFirst({ whereClause: where }).then(function(existing) {
+    table.find({ whereClause: whereClause, pageSize: 1 })
+      .then(function(list) {
         var payload = {
           moto_id: String(motoId),
           data_type: String(dataType),
-          data_json: JSON.stringify(value)
+          data_json: JSON.stringify(value || null)
         };
 
-        if (existing && existing.objectId) {
-          payload.objectId = existing.objectId;
+        if (list && list.length) {
+          payload.objectId = list[0].objectId; // update
         }
-
-        return store.save(payload);
-      }).then(function() {
-        // Mantém uma cópia local leve (só URL/JSON) como cache.
-        try { _localSave(motoId, dataType, value); } catch (e) {}
-        return true;
-      }).catch(function(err) {
-        console.error('saveToSDK Backendless failed (fallback localStorage):', err);
-        try { _localSave(motoId, dataType, value); return true; }
-        catch (e) { return Promise.reject(err); }
+        return table.save(payload);
+      })
+      .then(function() { resolve(true); })
+      .catch(function(err) {
+        console.error('saveToSDK (Backendless) failed:', err);
+        reject(err);
       });
-    }
+  });
+}
 
-    // Carrega do Backendless e faz fallback pro localStorage.
-    function loadFromSDK(motoId, dataType, fallback) {
-      _ensureBackendless();
+function loadFromSDK(motoId, dataType, fallback) {
+  return new Promise(function(resolve, reject) {
+    if (!ensureBackendless()) return resolve(fallback);
+    var table = Backendless.Data.of("Motos");
+    var whereClause = _whereClause(motoId, dataType);
 
-      if (!window.Backendless || !Backendless.Data) {
-        try { return Promise.resolve(_localLoad(motoId, dataType, fallback)); }
-        catch (e) { console.error('loadFromSDK localStorage failed:', e); return Promise.resolve(fallback); }
-      }
-
-      var store = Backendless.Data.of(BACKENDLESS_TABLE);
-      var where = "moto_id = '" + _escWhere(motoId) + "' AND data_type = '" + _escWhere(dataType) + "'";
-
-      return store.findFirst({ whereClause: where }).then(function(obj) {
-        if (!obj || !obj.data_json) {
-          // tenta cache local
-          try { return _localLoad(motoId, dataType, fallback); } catch (e) { return fallback; }
-        }
+    table.find({ whereClause: whereClause, pageSize: 1 })
+      .then(function(list) {
+        if (!list || !list.length) return resolve(fallback);
+        var raw = list[0].data_json;
+        if (!raw) return resolve(fallback);
         try {
-          var parsed = JSON.parse(obj.data_json);
-          // cache local leve
-          try { _localSave(motoId, dataType, parsed); } catch (e) {}
-          return parsed;
+          resolve(JSON.parse(raw));
         } catch (e) {
-          console.error('loadFromSDK JSON parse failed:', e);
-          return fallback;
+          console.error('loadFromSDK parse failed:', e);
+          resolve(fallback);
         }
-      }).catch(function(err) {
-        console.error('loadFromSDK Backendless failed (fallback localStorage):', err);
-        try { return _localLoad(motoId, dataType, fallback); } catch (e) { return fallback; }
+      })
+      .catch(function(err) {
+        console.error('loadFromSDK (Backendless) failed:', err);
+        resolve(fallback); // não derruba o painel
       });
+  });
+}
+
     }
 
 
@@ -1509,36 +1491,39 @@ function getFinalImageUrl() {
     }
 
     function addThumbnailFromFile() {
-      const fileInput = document.getElementById('thumbnailFileInput');
-      const file = fileInput.files[0];
-      
+      var fileInput = document.getElementById('thumbnailFileInput');
+      var file = fileInput && fileInput.files ? fileInput.files[0] : null;
+
       if (!file) {
         showToast('Por favor, selecione um arquivo', 'error');
         return;
       }
 
-      if (!file.type.startsWith('image/')) {
+      if (!file.type || !file.type.startsWith('image/')) {
         showToast('Por favor, selecione apenas arquivos de imagem', 'error');
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        thumbnailStorage[currentThumbnailMotoId] = e.target.result;
-        fileInput.value = '';
-        
-        // Salvar no banco de dados
-        saveToSDK(currentThumbnailMotoId, 'thumbnail', e.target.result);
-        
-        updateAdminPanelCounters();
-        showToast('✅ Miniatura definida com sucesso!', 'success');
-        closeThumbnailManager();
-      };
-      
-      reader.readAsDataURL(file);
-    }
+      showToast('⏳ Enviando miniatura...', 'info');
 
-    function addThumbnailFromUrl() {
+      uploadImageToCloudinary(file)
+        .then(function(url) {
+          thumbnailStorage[currentThumbnailMotoId] = url;
+          fileInput.value = '';
+          return saveToSDK(currentThumbnailMotoId, 'thumbnail', url);
+        })
+        .then(function() {
+          updateAdminPanelCounters();
+          showToast('✅ Miniatura definida com sucesso!', 'success');
+          closeThumbnailManager();
+        })
+        .catch(function(err) {
+          console.error('Thumbnail upload failed:', err);
+          var msg = (err && (err.message || err.error || err.toString())) ? (err.message || err.error || err.toString()) : 'Falha no upload';
+          showToast('❌ Erro ao enviar miniatura: ' + msg, 'error');
+        });
+    }
+function addThumbnailFromUrl() {
       const urlInput = document.getElementById('thumbnailUrlInput');
       const url = urlInput.value.trim();
       
