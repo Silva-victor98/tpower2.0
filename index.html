@@ -8,7 +8,7 @@
   <link rel="shortcut icon" type="image/png" href="https://i.imgur.com/FyCqY2d.png">
   <link rel="apple-touch-icon" href="https://i.imgur.com/FyCqY2d.png">
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://api.backendless.com/sdk/js/latest/backendless.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
   <style>
     body {
@@ -554,155 +554,105 @@ if (img && localStorage.getItem("foto_principal")) {
     // Salva APENAS URLs (ex.: Cloudinary), nunca base64.
     // Persistência REAL: grava e lê do Backendless (tabela "Motos").
 // A foto fica no Cloudinary; aqui a gente salva só a URL (string) e metadados.
-var BACKENDLESS_APP_ID = "EADDB868-2712-430C-B386-3488057173BE";
-var BACKENDLESS_JS_API_KEY = "8148EBB0-CA60-4F8E-A553-C3BEBA21AE47";
-var __backendlessReady = false;
-var __sdkBlockedUntil = 0;
-window.__TP_ADMIN_MODE = false; // Backendless só no painel
-function __enableAdminMode(){ window.__TP_ADMIN_MODE = true; }
-var __blInitPromise = null;
-var __sdkCache = {}; // key -> {ts,value,objectId}
-var __sdkInflight = {}; // key -> Promise
 
+// === SUPABASE (substitui Backendless) =========================================
+// Cloudinary guarda o ARQUIVO da foto. Aqui a gente salva só os LINKS (URLs) e dados.
+//
+// 1) No Supabase, crie uma tabela chamada: motos_store
+//    colunas: moto_id (text), data_type (text), data_json (jsonb), updated_at (timestamp)
+//    UNIQUE (moto_id, data_type)
+//
+// 2) Cole aqui suas credenciais do Supabase (Settings → API):
+var SUPABASE_URL = "https://cjmvurlcbelsircpiqbb.supabase.co";
+var SUPABASE_ANON_KEY = "sb_publishable_8lO0wrc_bFhXMPMn7LB_kA_PbEIQ8nE";
 
+// Tabela KV (chave/valor) para guardar tudo por moto_id + data_type
+var SUPABASE_TABLE = "motos_store";
+
+// Mantemos o nome ensureBackendless() para não mexer no resto do site.
+// Por dentro, ele inicializa o Supabase.
+var __supabaseClient = null;
 function ensureBackendless() {
-  // Backendless só deve rodar dentro do painel admin (evita 429 no site público)
-  if (!window.__TP_ADMIN_MODE) return false;
-
-  if (__sdkBlockedUntil && Date.now() < __sdkBlockedUntil) return false;
-
-  if (__backendlessReady) return true;
-
-  if (typeof Backendless === 'undefined') {
-    console.error('Backendless SDK não carregou. Confira o <script src="https://api.backendless.com/sdk/js/latest/backendless.js"><\/script>');
-    return false;
-  }
-
-  // Evita múltiplos initApp em paralelo (que chama /info várias vezes)
-  if (__blInitPromise) return true;
-
+  if (__supabaseClient) return __supabaseClient;
   try {
-    Backendless.initApp(BACKENDLESS_APP_ID, BACKENDLESS_JS_API_KEY);
-    __backendlessReady = true;
-    __blInitPromise = Promise.resolve(true);
-    return true;
+    if (!window.supabase || !window.supabase.createClient) {
+      console.warn("Supabase SDK não carregou.");
+      return null;
+    }
+    if (!SUPABASE_URL || SUPABASE_URL.indexOf("COLE_AQUI") === 0) {
+      console.warn("Supabase URL/ANON KEY não configuradas.");
+      return null;
+    }
+    __supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    return __supabaseClient;
   } catch (e) {
-    console.error('Falha ao inicializar Backendless:', e);
-    return false;
+    console.warn("Falha ao iniciar Supabase:", e);
+    return null;
   }
 }
-
-function _escapeWhereValue(v) {
-  return String(v).replace(/'/g, "''");
-}
-
-function _whereClause(motoId, dataType) {
-  return "moto_id='" + _escapeWhereValue(motoId) + "' AND data_type='" + _escapeWhereValue(dataType) + "'";
-}
-
 function saveToSDK(motoId, dataType, value) {
-  return new Promise(function(resolve, reject) {
-    if (!ensureBackendless()) return reject(new Error('Backendless não inicializado'));
-    if (__sdkBlockedUntil && Date.now() < __sdkBlockedUntil) return reject(new Error('Backendless temporariamente bloqueado'));
+  var sb = ensureBackendless();
+  // Só salva no "banco" quando o painel estiver logado
+  if (!sb || !window.__ADMIN_LOGGED_IN) {
+    return Promise.resolve(null);
+  }
 
-    var key = String(motoId) + '::' + String(dataType);
-    var table = Backendless.Data.of("Motos");
+  var row = {
+    moto_id: motoId,
+    data_type: dataType,
+    data_json: (dataValue === undefined ? null : dataValue),
+    updated_at: new Date().toISOString()
+  };
 
-    // guarda só JSON pequeno (URLs e dados), nunca base64
-    var payload = {
-      moto_id: String(motoId),
-      data_type: String(dataType),
-      data_json: JSON.stringify(value || null)
-    };
-
-    // Se já sabemos o objectId, salva direto (1 request)
-    if (__sdkCache[key] && __sdkCache[key].objectId) {
-      payload.objectId = __sdkCache[key].objectId;
-      table.save(payload)
-        .then(function(res) {
-          __sdkCache[key] = { ts: Date.now(), value: value, objectId: (res && res.objectId) ? res.objectId : payload.objectId };
-          resolve(true);
-        })
-        .catch(function(err) {
-          if (String(err).includes('429') || (err && err.statusCode === 429)) __sdkBlockedUntil = Date.now() + 65000;
-          console.error('saveToSDK (Backendless) failed:', err);
-          reject(err);
-        });
-      return;
-    }
-
-    // Senão, faz 1 find para descobrir objectId (apenas uma vez)
-    var whereClause = _whereClause(motoId, dataType);
-    table.find({ whereClause: whereClause, pageSize: 1 })
-      .then(function(list) {
-        if (list && list.length && list[0].objectId) payload.objectId = list[0].objectId;
-        return table.save(payload);
-      })
-      .then(function(res) {
-        __sdkCache[key] = { ts: Date.now(), value: value, objectId: (res && res.objectId) ? res.objectId : payload.objectId };
-        resolve(true);
-      })
-      .catch(function(err) {
-        if (String(err).includes('429') || (err && err.statusCode === 429)) __sdkBlockedUntil = Date.now() + 65000;
-        console.error('saveToSDK (Backendless) failed:', err);
-        reject(err);
-      });
-  });
+  // Upsert (cria ou atualiza) sem fazer "find" antes (1 request só)
+  return sb
+    .from(SUPABASE_TABLE)
+    .upsert(row, { onConflict: 'moto_id,data_type' })
+    .then(function(res) {
+      if (res && res.error) throw res.error;
+      return res.data;
+    })
+    .catch(function(err) {
+      console.warn("saveToSDK (Supabase) failed:", err);
+      return null;
+    });
 }
+
 
 function loadFromSDK(motoId, dataType, fallback) {
-  return new Promise(function(resolve) {
-    if (!ensureBackendless()) return resolve(fallback);
-    if (__sdkBlockedUntil && Date.now() < __sdkBlockedUntil) return resolve(fallback);
+  var sb = ensureBackendless();
+  // Só carrega do "banco" quando o painel estiver logado
+  if (!sb || !window.__ADMIN_LOGGED_IN) {
+    return Promise.resolve(defaultValue);
+  }
 
-    var key = String(motoId) + '::' + String(dataType);
+  // Cache simples (evita repetir requests se você abrir/fechar o painel rápido)
+  window.__SDK_CACHE = window.__SDK_CACHE || {};
+  var cacheKey = motoId + "::" + dataType;
+  var now = Date.now();
+  var cached = window.__SDK_CACHE[cacheKey];
+  if (cached && (now - cached.ts) < 60000) { // 60s
+    return Promise.resolve(cached.value);
+  }
 
-    // Cache 60s para evitar estourar 50 req/min
-    var cached = __sdkCache[key];
-    if (cached && (Date.now() - cached.ts) < 60000) {
-      return resolve((cached.value !== undefined) ? cached.value : fallback);
-    }
-
-    // Se já tem request em andamento, reutiliza
-    if (__sdkInflight[key]) {
-      return __sdkInflight[key].then(function(v){ resolve(v); }).catch(function(){ resolve(fallback); });
-    }
-
-    var table = Backendless.Data.of("Motos");
-    var whereClause = _whereClause(motoId, dataType);
-
-    __sdkInflight[key] = table.find({ whereClause: whereClause, pageSize: 1 })
-      .then(function(list) {
-        if (!list || !list.length) {
-          __sdkCache[key] = { ts: Date.now(), value: fallback, objectId: null };
-          return fallback;
-        }
-        var objId = list[0].objectId || null;
-        var raw = list[0].data_json;
-        if (!raw) {
-          __sdkCache[key] = { ts: Date.now(), value: fallback, objectId: objId };
-          return fallback;
-        }
-        try {
-          var parsed = JSON.parse(raw);
-          __sdkCache[key] = { ts: Date.now(), value: parsed, objectId: objId };
-          return parsed;
-        } catch (e) {
-          console.error('loadFromSDK parse failed:', e);
-          __sdkCache[key] = { ts: Date.now(), value: fallback, objectId: objId };
-          return fallback;
-        }
-      })
-      .catch(function(err) {
-        if (String(err).includes('429') || (err && err.statusCode === 429)) __sdkBlockedUntil = Date.now() + 65000;
-        console.error('loadFromSDK (Backendless) failed:', err);
-        return fallback;
-      })
-      .finally(function(){ delete __sdkInflight[key]; });
-
-    __sdkInflight[key].then(function(v){ resolve(v); }).catch(function(){ resolve(fallback); });
-  });
+  return sb
+    .from(SUPABASE_TABLE)
+    .select('data_json')
+    .eq('moto_id', motoId)
+    .eq('data_type', dataType)
+    .limit(1)
+    .then(function(res) {
+      if (res && res.error) throw res.error;
+      var val = (res.data && res.data[0]) ? res.data[0].data_json : defaultValue;
+      window.__SDK_CACHE[cacheKey] = { ts: Date.now(), value: val };
+      return val;
+    })
+    .catch(function(err) {
+      console.warn("loadFromSDK (Supabase) failed:", err);
+      return defaultValue;
+    });
 }
+
 
 const thumbnailStorage = {};
     const motoDataStorage = {};
@@ -710,6 +660,7 @@ const thumbnailStorage = {};
     // Sistema de Login Admin
     const ADMIN_USER = 'admin';
     const ADMIN_PASS = 'tpower2024';
+    window.__ADMIN_LOGGED_IN = false;
 
     function showAdminLogin() {
       document.getElementById('adminLoginModal').classList.remove('hidden');
@@ -729,6 +680,8 @@ const thumbnailStorage = {};
       const password = document.getElementById('admin_password').value;
       
       if (username === ADMIN_USER && password === ADMIN_PASS) {
+        window.__ADMIN_LOGGED_IN = true;
+        window.__SDK_CACHE = {};
         closeAdminLogin();
         loadAdminPanel();
       } else {
@@ -838,7 +791,6 @@ const thumbnailStorage = {};
 
     // Carregar painel administrativo
     function loadAdminPanel() {
-      __enableAdminMode();
       const adminPanel = document.getElementById('adminPanel');
       
       let adminCardsHTML = '';
@@ -934,6 +886,7 @@ const thumbnailStorage = {};
     }
 
     function closeAdminPanel() {
+      window.__ADMIN_LOGGED_IN = false;
       document.getElementById('adminPanel').classList.add('hidden');
       // Atualizar cards APENAS ao fechar o painel admin
       renderMotoCards();
@@ -1618,14 +1571,12 @@ function addThumbnailFromUrl() {
 
     function removeThumbnail() {
       delete thumbnailStorage[currentThumbnailMotoId];
-
-      // Remover do Backendless: salva null (mantém estrutura simples)
-      saveToSDK(currentThumbnailMotoId, 'thumbnail', null).catch(function(){});
-
-      updateAdminPanelCounters();
-      showToast('Miniatura removida com sucesso!', 'success');
-      closeThumbnailManager();
-    }
+      
+      // Remover do banco de dados
+      const existing = currentData.find(r => r.moto_id === currentThumbnailMotoId && r.data_type === 'thumbnail');
+      if (existing) {
+        window.dataSdk.delete(existing);
+      }
       
       updateAdminPanelCounters();
       showToast('Miniatura removida com sucesso!', 'success');
