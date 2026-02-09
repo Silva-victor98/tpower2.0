@@ -557,22 +557,34 @@ if (img && localStorage.getItem("foto_principal")) {
 var BACKENDLESS_APP_ID = "EADDB868-2712-430C-B386-3488057173BE";
 var BACKENDLESS_JS_API_KEY = "8148EBB0-CA60-4F8E-A553-C3BEBA21AE47";
 var __backendlessReady = false;
-var __sdkCache = {};           // key -> {ts:number, value:any}
-var __sdkObjId = {};           // key -> objectId
-var __sdkInFlight = {};        // key -> Promise
-var __sdkCacheTTL = 30000;     // 30s cache para não estourar rate limit
-var __sdkLast429 = 0;          // timestamp do último 429
+var __sdkBlockedUntil = 0;
+window.__TP_ADMIN_MODE = false; // Backendless só no painel
+function __enableAdminMode(){ window.__TP_ADMIN_MODE = true; }
+var __blInitPromise = null;
+var __sdkCache = {}; // key -> {ts,value,objectId}
+var __sdkInflight = {}; // key -> Promise
 
 
 function ensureBackendless() {
+  // Backendless só deve rodar dentro do painel admin (evita 429 no site público)
+  if (!window.__TP_ADMIN_MODE) return false;
+
+  if (__sdkBlockedUntil && Date.now() < __sdkBlockedUntil) return false;
+
   if (__backendlessReady) return true;
+
   if (typeof Backendless === 'undefined') {
     console.error('Backendless SDK não carregou. Confira o <script src="https://api.backendless.com/sdk/js/latest/backendless.js"><\/script>');
     return false;
   }
+
+  // Evita múltiplos initApp em paralelo (que chama /info várias vezes)
+  if (__blInitPromise) return true;
+
   try {
     Backendless.initApp(BACKENDLESS_APP_ID, BACKENDLESS_JS_API_KEY);
     __backendlessReady = true;
+    __blInitPromise = Promise.resolve(true);
     return true;
   } catch (e) {
     console.error('Falha ao inicializar Backendless:', e);
@@ -591,124 +603,106 @@ function _whereClause(motoId, dataType) {
 function saveToSDK(motoId, dataType, value) {
   return new Promise(function(resolve, reject) {
     if (!ensureBackendless()) return reject(new Error('Backendless não inicializado'));
+    if (__sdkBlockedUntil && Date.now() < __sdkBlockedUntil) return reject(new Error('Backendless temporariamente bloqueado'));
 
-    var key = String(motoId) + ':' + String(dataType);
+    var key = String(motoId) + '::' + String(dataType);
     var table = Backendless.Data.of("Motos");
 
-    // Se já sabemos o objectId, fazemos save direto (1 request)
-    if (__sdkObjId[key]) {
-      table.save({
-        objectId: __sdkObjId[key],
-        moto_id: String(motoId),
-        data_type: String(dataType),
-        data_json: JSON.stringify(value)
-      }).then(function(saved) {
-        __sdkCache[key] = { ts: Date.now(), value: value };
-        resolve(saved);
-      }).catch(function(err) {
-        reject(err);
-      });
+    // guarda só JSON pequeno (URLs e dados), nunca base64
+    var payload = {
+      moto_id: String(motoId),
+      data_type: String(dataType),
+      data_json: JSON.stringify(value || null)
+    };
+
+    // Se já sabemos o objectId, salva direto (1 request)
+    if (__sdkCache[key] && __sdkCache[key].objectId) {
+      payload.objectId = __sdkCache[key].objectId;
+      table.save(payload)
+        .then(function(res) {
+          __sdkCache[key] = { ts: Date.now(), value: value, objectId: (res && res.objectId) ? res.objectId : payload.objectId };
+          resolve(true);
+        })
+        .catch(function(err) {
+          if (String(err).includes('429') || (err && err.statusCode === 429)) __sdkBlockedUntil = Date.now() + 65000;
+          console.error('saveToSDK (Backendless) failed:', err);
+          reject(err);
+        });
       return;
     }
 
-    // Caso contrário, 1x find para descobrir objectId e depois save
+    // Senão, faz 1 find para descobrir objectId (apenas uma vez)
     var whereClause = _whereClause(motoId, dataType);
     table.find({ whereClause: whereClause, pageSize: 1 })
       .then(function(list) {
-        var payload = {
-          moto_id: String(motoId),
-          data_type: String(dataType),
-          data_json: JSON.stringify(value)
-        };
-        if (list && list.length && list[0].objectId) {
-          payload.objectId = list[0].objectId;
-        }
+        if (list && list.length && list[0].objectId) payload.objectId = list[0].objectId;
         return table.save(payload);
       })
-      .then(function(saved) {
-        if (saved && saved.objectId) __sdkObjId[key] = saved.objectId;
-        __sdkCache[key] = { ts: Date.now(), value: value };
-        resolve(saved);
+      .then(function(res) {
+        __sdkCache[key] = { ts: Date.now(), value: value, objectId: (res && res.objectId) ? res.objectId : payload.objectId };
+        resolve(true);
       })
       .catch(function(err) {
-        console.error('saveToSDK failed:', err);
+        if (String(err).includes('429') || (err && err.statusCode === 429)) __sdkBlockedUntil = Date.now() + 65000;
+        console.error('saveToSDK (Backendless) failed:', err);
         reject(err);
       });
   });
 }
 
-
 function loadFromSDK(motoId, dataType, fallback) {
-  return new Promise(function(resolve, reject) {
+  return new Promise(function(resolve) {
     if (!ensureBackendless()) return resolve(fallback);
+    if (__sdkBlockedUntil && Date.now() < __sdkBlockedUntil) return resolve(fallback);
 
-    var key = String(motoId) + ':' + String(dataType);
+    var key = String(motoId) + '::' + String(dataType);
 
-    // Cache (evita bater no limite)
+    // Cache 60s para evitar estourar 50 req/min
     var cached = __sdkCache[key];
-    if (cached && (Date.now() - cached.ts) < __sdkCacheTTL) {
-      return resolve(cached.value);
+    if (cached && (Date.now() - cached.ts) < 60000) {
+      return resolve((cached.value !== undefined) ? cached.value : fallback);
     }
 
-    // Se já tem request em andamento para essa chave, reutiliza
-    if (__sdkInFlight[key]) {
-      return __sdkInFlight[key].then(resolve).catch(function(e){ resolve(fallback); });
-    }
-
-    // Se acabou de tomar 429, não spammar: devolve fallback por 60s
-    if (__sdkLast429 && (Date.now() - __sdkLast429) < 60000) {
-      return resolve(fallback);
+    // Se já tem request em andamento, reutiliza
+    if (__sdkInflight[key]) {
+      return __sdkInflight[key].then(function(v){ resolve(v); }).catch(function(){ resolve(fallback); });
     }
 
     var table = Backendless.Data.of("Motos");
     var whereClause = _whereClause(motoId, dataType);
 
-    var p = table.find({ whereClause: whereClause, pageSize: 1 })
+    __sdkInflight[key] = table.find({ whereClause: whereClause, pageSize: 1 })
       .then(function(list) {
-        delete __sdkInFlight[key];
-
         if (!list || !list.length) {
-          __sdkCache[key] = { ts: Date.now(), value: fallback };
+          __sdkCache[key] = { ts: Date.now(), value: fallback, objectId: null };
           return fallback;
         }
-
-        if (list[0].objectId) __sdkObjId[key] = list[0].objectId;
-
+        var objId = list[0].objectId || null;
         var raw = list[0].data_json;
         if (!raw) {
-          __sdkCache[key] = { ts: Date.now(), value: fallback };
+          __sdkCache[key] = { ts: Date.now(), value: fallback, objectId: objId };
           return fallback;
         }
-
         try {
           var parsed = JSON.parse(raw);
-          __sdkCache[key] = { ts: Date.now(), value: parsed };
+          __sdkCache[key] = { ts: Date.now(), value: parsed, objectId: objId };
           return parsed;
         } catch (e) {
-          console.error('loadFromSDK JSON parse failed:', e);
-          __sdkCache[key] = { ts: Date.now(), value: fallback };
+          console.error('loadFromSDK parse failed:', e);
+          __sdkCache[key] = { ts: Date.now(), value: fallback, objectId: objId };
           return fallback;
         }
       })
       .catch(function(err) {
-        delete __sdkInFlight[key];
-
-        // Backendless 429 (limite)
-        if (err && (err.statusCode === 429 || (String(err.message || '').indexOf('Maximum request per minute') >= 0))) {
-          __sdkLast429 = Date.now();
-          console.warn('Backendless rate limit (429). Aguardando reset do limite.');
-          return fallback;
-        }
-
+        if (String(err).includes('429') || (err && err.statusCode === 429)) __sdkBlockedUntil = Date.now() + 65000;
         console.error('loadFromSDK (Backendless) failed:', err);
         return fallback;
-      });
+      })
+      .finally(function(){ delete __sdkInflight[key]; });
 
-    __sdkInFlight[key] = p;
-    p.then(resolve).catch(function(){ resolve(fallback); });
+    __sdkInflight[key].then(function(v){ resolve(v); }).catch(function(){ resolve(fallback); });
   });
 }
-
 
 const thumbnailStorage = {};
     const motoDataStorage = {};
@@ -844,6 +838,7 @@ const thumbnailStorage = {};
 
     // Carregar painel administrativo
     function loadAdminPanel() {
+      __enableAdminMode();
       const adminPanel = document.getElementById('adminPanel');
       
       let adminCardsHTML = '';
@@ -1623,12 +1618,14 @@ function addThumbnailFromUrl() {
 
     function removeThumbnail() {
       delete thumbnailStorage[currentThumbnailMotoId];
-      
-      // Remover do banco de dados
-      const existing = currentData.find(r => r.moto_id === currentThumbnailMotoId && r.data_type === 'thumbnail');
-      if (existing) {
-        window.dataSdk.delete(existing);
-      }
+
+      // Remover do Backendless: salva null (mantém estrutura simples)
+      saveToSDK(currentThumbnailMotoId, 'thumbnail', null).catch(function(){});
+
+      updateAdminPanelCounters();
+      showToast('Miniatura removida com sucesso!', 'success');
+      closeThumbnailManager();
+    }
       
       updateAdminPanelCounters();
       showToast('Miniatura removida com sucesso!', 'success');
