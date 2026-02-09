@@ -554,7 +554,7 @@ if (img && localStorage.getItem("foto_principal")) {
     // Guarda APENAS URLs (ex.: Cloudinary) e dados em JSON. Nunca base64.
     const BACKENDLESS_APP_ID = 'EADDB868-2712-430C-B386-3488057173BE';
     const BACKENDLESS_JS_KEY = '8148EBB0-CA60-4F8E-A553-C3BEBA21AE47';
-    const BACKENDLESS_TABLE = 'TPowerStore'; // Cria automaticamente ao salvar (se permitido)
+    const BACKENDLESS_TABLE = 'Motos'; // Cria automaticamente ao salvar (se permitido)
 
     function _sdkKey(motoId, dataType) {
       return 'tpowermotos:' + String(motoId) + ':' + String(dataType);
@@ -597,13 +597,13 @@ if (img && localStorage.getItem("foto_principal")) {
       }
 
       var store = Backendless.Data.of(BACKENDLESS_TABLE);
-      var where = "motoId = '" + _escWhere(motoId) + "' AND dataType = '" + _escWhere(dataType) + "'";
+      var where = "moto_id = '" + _escWhere(motoId) + "' AND data_type = '" + _escWhere(dataType) + "'";
 
       return store.findFirst({ whereClause: where }).then(function(existing) {
         var payload = {
-          motoId: String(motoId),
-          dataType: String(dataType),
-          data: JSON.stringify(value)
+          moto_id: String(motoId),
+          data_type: String(dataType),
+          data_json: JSON.stringify(value)
         };
 
         if (existing && existing.objectId) {
@@ -632,15 +632,15 @@ if (img && localStorage.getItem("foto_principal")) {
       }
 
       var store = Backendless.Data.of(BACKENDLESS_TABLE);
-      var where = "motoId = '" + _escWhere(motoId) + "' AND dataType = '" + _escWhere(dataType) + "'";
+      var where = "moto_id = '" + _escWhere(motoId) + "' AND data_type = '" + _escWhere(dataType) + "'";
 
       return store.findFirst({ whereClause: where }).then(function(obj) {
-        if (!obj || !obj.data) {
+        if (!obj || !obj.data_json) {
           // tenta cache local
           try { return _localLoad(motoId, dataType, fallback); } catch (e) { return fallback; }
         }
         try {
-          var parsed = JSON.parse(obj.data);
+          var parsed = JSON.parse(obj.data_json);
           // cache local leve
           try { _localSave(motoId, dataType, parsed); } catch (e) {}
           return parsed;
