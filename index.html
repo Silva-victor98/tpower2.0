@@ -561,7 +561,7 @@ var __backendlessReady = false;
 function ensureBackendless() {
   if (__backendlessReady) return true;
   if (typeof Backendless === 'undefined') {
-    console.error('Backendless SDK não carregou. Confira o <script src="https://api.backendless.com/sdk/js/latest/backendless.js"></script>');
+    console.error('Backendless SDK não carregou. Confira o <script src="https://api.backendless.com/sdk/js/latest/backendless.js"><\/script>');
     return false;
   }
   try {
@@ -634,10 +634,7 @@ function loadFromSDK(motoId, dataType, fallback) {
   });
 }
 
-    }
-
-
-    const thumbnailStorage = {};
+const thumbnailStorage = {};
     const motoDataStorage = {};
 
     // Sistema de Login Admin
