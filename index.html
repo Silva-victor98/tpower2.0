@@ -637,6 +637,50 @@ function loadFromSDK(motoId, dataType, fallback) {
 const thumbnailStorage = {};
     const motoDataStorage = {};
 
+    // ✅ Hydrate (carregar) dados persistidos do Backendless ao abrir o site
+    // Isso é o que faz as fotos/miniaturas continuarem após F5.
+    function hydrateAllFromBackendless() {
+      return new Promise(function(resolve) {
+        // Se o Backendless não estiver pronto, apenas segue com o site "zerado" (sem quebrar)
+        if (!ensureBackendless()) return resolve(false);
+
+        var motoIds = Object.keys(motosDatabase || {});
+        var tasks = [];
+
+        motoIds.forEach(function(id) {
+          // Fotos
+          tasks.push(
+            loadFromSDK(id, 'photos', []).then(function(list) {
+              if (Array.isArray(list) && list.length) photosStorage[id] = list;
+            })
+          );
+
+          // Miniatura (string)
+          tasks.push(
+            loadFromSDK(id, 'thumbnail', null).then(function(url) {
+              if (typeof url === 'string' && url.trim()) thumbnailStorage[id] = url.trim();
+            })
+          );
+
+          // Dados da moto (objeto)
+          tasks.push(
+            loadFromSDK(id, 'moto_data', null).then(function(obj) {
+              if (obj && typeof obj === 'object') motoDataStorage[id] = obj;
+            })
+          );
+        });
+
+        Promise.all(tasks)
+          .then(function() { resolve(true); })
+          .catch(function(err) {
+            console.error('hydrateAllFromBackendless failed:', err);
+            resolve(false);
+          });
+      });
+    }
+
+
+
     // Sistema de Login Admin
     const ADMIN_USER = 'admin';
     const ADMIN_PASS = 'tpower2024';
@@ -2012,10 +2056,11 @@ function saveMoto() {
       showAdminLogin();
     }
 
-    // Inicializar
-    renderMotoCards();
-    showPage(0);
-  
+    // Inicializar (carrega do Backendless e só depois desenha)
+    hydrateAllFromBackendless().then(function(){
+      renderMotoCards();
+      showPage(0);
+    });
 </script>
 <!-- Botão Cadeado (Admin) -->
   <button id="adminLockBtn"
