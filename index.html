@@ -635,51 +635,44 @@ function loadFromSDK(motoId, dataType, fallback) {
 }
 
 const thumbnailStorage = {};
-    const motoDataStorage = {};
+    const motoDataStorage = {};// Carrega dados persistidos do Backendless (moto_data e thumbnail) com fallback seguro.
+function bootstrapMotosFromBackendless() {
+  // Se Backendless não estiver pronto, renderiza com defaults
+  if (!ensureBackendless()) {
+    renderMotoCards();
+    return Promise.resolve(false);
+  }
 
-    // ✅ Hydrate (carregar) dados persistidos do Backendless ao abrir o site
-    // Isso é o que faz as fotos/miniaturas continuarem após F5.
-    function hydrateAllFromBackendless() {
-      return new Promise(function(resolve) {
-        // Se o Backendless não estiver pronto, apenas segue com o site "zerado" (sem quebrar)
-        if (!ensureBackendless()) return resolve(false);
+  var tasks = Object.entries(motosDatabase).map(function(entry) {
+    var id = entry[0];
+    var defaultMoto = entry[1];
 
-        var motoIds = Object.keys(motosDatabase || {});
-        var tasks = [];
+    // moto_data
+    var t1 = loadFromSDK(id, 'moto_data', null).then(function(data) {
+      if (data && typeof data === 'object') {
+        motoDataStorage[id] = _mergeMoto(defaultMoto, data);
+      }
+    });
 
-        motoIds.forEach(function(id) {
-          // Fotos
-          tasks.push(
-            loadFromSDK(id, 'photos', []).then(function(list) {
-              if (Array.isArray(list) && list.length) photosStorage[id] = list;
-            })
-          );
+    // thumbnail
+    var t2 = loadFromSDK(id, 'thumbnail', null).then(function(url) {
+      if (typeof url === 'string' && url) {
+        thumbnailStorage[id] = url;
+      }
+    });
 
-          // Miniatura (string)
-          tasks.push(
-            loadFromSDK(id, 'thumbnail', null).then(function(url) {
-              if (typeof url === 'string' && url.trim()) thumbnailStorage[id] = url.trim();
-            })
-          );
+    return Promise.all([t1, t2]);
+  });
 
-          // Dados da moto (objeto)
-          tasks.push(
-            loadFromSDK(id, 'moto_data', null).then(function(obj) {
-              if (obj && typeof obj === 'object') motoDataStorage[id] = obj;
-            })
-          );
-        });
-
-        Promise.all(tasks)
-          .then(function() { resolve(true); })
-          .catch(function(err) {
-            console.error('hydrateAllFromBackendless failed:', err);
-            resolve(false);
-          });
-      });
-    }
-
-
+  return Promise.all(tasks).then(function() {
+    renderMotoCards();
+    return true;
+  }).catch(function(err) {
+    console.error('bootstrapMotosFromBackendless failed:', err);
+    renderMotoCards();
+    return false;
+  });
+}
 
     // Sistema de Login Admin
     const ADMIN_USER = 'admin';
@@ -742,24 +735,72 @@ const thumbnailStorage = {};
     }
 
     // Renderizar cards das motos
-    function renderMotoCards() {
-      const grid = document.getElementById('motos-grid');
-      grid.innerHTML = '';
-      
-      Object.entries(motosDatabase).forEach(([id, defaultMoto]) => {
-        // SEMPRE pega dados do storage primeiro, se existir
-        const moto = motoDataStorage[id] || getMotoData(id);
-        const thumbnail = thumbnailStorage[id];
-        
-        const card = document.createElement('div');
-        card.className = 'moto-card visible group card-gradient backdrop-blur-sm rounded-2xl border border-white/10 transition-all duration-500 hover-glow cursor-pointer';
-        card.setAttribute('data-moto-id', id);
-        card.onclick = () => showMotoDetail(id);
-        
-        let imageHTML = '';
-        if (thumbnail) {
-          imageHTML = `<img src="${thumbnail}" alt="${moto.brand} ${moto.name}" loading="lazy" class="thumbnail-preview" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">`;
-        }
+    // Renderizar cards das motos (com fallback seguro)
+function _mergeMoto(defaultMoto, storedMoto) {
+  // storedMoto pode vir vazio/sem campos; nunca deixe name/brand virarem undefined
+  if (!storedMoto || typeof storedMoto !== 'object') return defaultMoto;
+  const merged = Object.assign({}, defaultMoto, storedMoto);
+  // Garantias mínimas
+  if (!merged.name) merged.name = defaultMoto.name;
+  if (!merged.brand) merged.brand = defaultMoto.brand;
+  if (!merged.year) merged.year = defaultMoto.year;
+  if (!merged.price) merged.price = defaultMoto.price;
+  if (!merged.description) merged.description = defaultMoto.description;
+  if (!merged.specs) merged.specs = defaultMoto.specs;
+  if (!merged.features) merged.features = defaultMoto.features;
+  return merged;
+}
+
+function renderMotoCards() {
+  const grid = document.getElementById('motos-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  Object.entries(motosDatabase).forEach(function(entry) {
+    const id = entry[0];
+    const defaultMoto = entry[1];
+
+    const moto = _mergeMoto(defaultMoto, motoDataStorage[id]);
+    const thumbnail = thumbnailStorage[id];
+
+    const card = document.createElement('div');
+    card.className = 'moto-card visible group card-gradient backdrop-blur-sm rounded-2xl border border-white/10 transition-all duration-500 hover-glow cursor-pointer';
+    card.setAttribute('data-moto-id', id);
+    card.onclick = function() { showMotoDetail(id); };
+
+    let imageHTML = '';
+    if (thumbnail) {
+      imageHTML = `<img src="${thumbnail}" alt="${moto.brand} ${moto.name}" loading="lazy" class="thumbnail-preview" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`;
+    } else {
+      imageHTML = `<div class="thumbnail-placeholder"><i class="fas fa-motorcycle text-4xl text-white/40"></i></div>`;
+    }
+
+    card.innerHTML = `
+      <div class="relative h-48 sm:h-56 rounded-t-2xl overflow-hidden">
+        ${imageHTML}
+        <div class="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+        ${moto.badge ? `<span class="badge absolute top-4 right-4 px-3 py-1 rounded-full text-xs font-semibold bg-sky-500/90 text-white backdrop-blur-sm">${moto.badge}</span>` : ''}
+      </div>
+      <div class="p-5 sm:p-6 space-y-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h3 class="text-lg sm:text-xl font-bold text-white truncate">${moto.name || defaultMoto.name}</h3>
+            <p class="text-white/60 text-sm sm:text-base">${moto.brand || defaultMoto.brand} • ${moto.year || defaultMoto.year}</p>
+          </div>
+          <div class="text-right shrink-0">
+            <p class="text-sky-400 font-bold text-base sm:text-lg">${moto.price || defaultMoto.price}</p>
+          </div>
+        </div>
+        <p class="text-white/70 text-sm leading-relaxed line-clamp-2">${moto.description || defaultMoto.description}</p>
+        <div class="pt-2 flex items-center justify-between">
+          <span class="text-white/50 text-xs">Clique para detalhes</span>
+          <i class="fas fa-arrow-right text-white/40 group-hover:text-sky-400 transition-colors"></i>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
         
         card.innerHTML = `
           <div class="relative p-4 sm:p-6 bg-gradient-to-br from-sky-500/10 to-transparent">
@@ -1183,10 +1224,16 @@ function getFinalImageUrl() {
       loadFromSDK(currentMotoId, 'photos', []).then(function(saved) {
         if (Array.isArray(saved)) {
           photosStorage[currentMotoId] = saved;
-        } else if (!photosStorage[currentMotoId]) {
-          photosStorage[currentMotoId] = [];
-        }
-        renderPhotosList();
+        } else if (!photosStorage[currentMotoId]) { photosStorage[currentMotoId] = []; }
+        // Carregar fotos persistidas do Backendless (URLs do Cloudinary)
+        loadFromSDK(currentMotoId, 'photos', photosStorage[currentMotoId]).then(function(list) {
+          if (Array.isArray(list)) { photosStorage[currentMotoId] = list; }
+          renderPhotosList();
+          updateAdminPanelCounters();
+        }).catch(function() {
+          renderPhotosList();
+          updateAdminPanelCounters();
+        });
       });
     }
 
@@ -2055,12 +2102,9 @@ function saveMoto() {
     if (window.location.hash === '#admin-panel') {
       showAdminLogin();
     }
-
-    // Inicializar (carrega do Backendless e só depois desenha)
-    hydrateAllFromBackendless().then(function(){
-      renderMotoCards();
-      showPage(0);
-    });
+    // Inicializar
+    bootstrapMotosFromBackendless();
+    showPage(0);
 </script>
 <!-- Botão Cadeado (Admin) -->
   <button id="adminLockBtn"
