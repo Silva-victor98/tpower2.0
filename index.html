@@ -600,7 +600,7 @@ function saveToSDK(motoId, dataType, value) {
   var row = {
     moto_id: motoId,
     data_type: dataType,
-    data_json: (dataValue === undefined ? null : dataValue),
+    data_json: (value === undefined ? null : value),
     updated_at: new Date().toISOString()
   };
 
@@ -623,7 +623,7 @@ function loadFromSDK(motoId, dataType, fallback) {
   var sb = ensureBackendless();
   // Só carrega do "banco" quando o painel estiver logado
   if (!sb || !window.__ADMIN_LOGGED_IN) {
-    return Promise.resolve(defaultValue);
+    return Promise.resolve(fallback);
   }
 
   // Cache simples (evita repetir requests se você abrir/fechar o painel rápido)
@@ -643,13 +643,13 @@ function loadFromSDK(motoId, dataType, fallback) {
     .limit(1)
     .then(function(res) {
       if (res && res.error) throw res.error;
-      var val = (res.data && res.data[0]) ? res.data[0].data_json : defaultValue;
+      var val = (res.data && res.data[0]) ? res.data[0].data_json : fallback;
       window.__SDK_CACHE[cacheKey] = { ts: Date.now(), value: val };
       return val;
     })
     .catch(function(err) {
       console.warn("loadFromSDK (Supabase) failed:", err);
-      return defaultValue;
+      return fallback;
     });
 }
 
