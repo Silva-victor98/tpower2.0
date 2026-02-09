@@ -497,6 +497,7 @@
    </div>
   </footer>
   <script>
+
    function saveImage() {
   const url = document.getElementById("photoUrlInput").value;
   if (!url) {
@@ -944,9 +945,6 @@ function uploadImageToCloudinary(file) {
   });
 }
 
-
-  return data.secure_url;
-}
 
 function getFinalImageUrl() {
   const fileInput = document.getElementById('photoFileInput');
@@ -1949,7 +1947,8 @@ function saveMoto() {
     // Inicializar
     renderMotoCards();
     showPage(0);
-  </script>
+  
+</script>
 <!-- Botão Cadeado (Admin) -->
   <button id="adminLockBtn"
     onclick="showAdminLogin()"
