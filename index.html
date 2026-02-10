@@ -622,7 +622,7 @@ function saveToSDK(motoId, dataType, value) {
     })
     .catch(function(err) {
       console.warn("saveToSDK (Supabase) failed:", err);
-      return null;
+      throw err;
     });
 }
 
@@ -645,9 +645,10 @@ function loadFromSDK(motoId, dataType, fallback) {
 
   return sb
     .from(SUPABASE_TABLE)
-    .select('data_json')
+    .select('data_json, updated_at')
     .eq('moto_id', motoId)
     .eq('data_type', dataType)
+    .order('updated_at', { ascending: false })
     .limit(1)
     .then(function(res) {
       if (res && res.error) throw res.error;
@@ -1288,8 +1289,12 @@ function getFinalImageUrl() {
       photosStorage[currentMotoId] = photosStorage[currentMotoId].filter(p => p.id !== photoId);
       
       // Salvar no banco de dados
-      saveToSDK(currentMotoId, 'photos', photosStorage[currentMotoId]);
-      
+      saveToSDK(currentMotoId, 'photos', photosStorage[currentMotoId])
+        .catch(function(err){
+          console.error('Falha ao salvar remoção:', err);
+          showToast('❌ Falha ao salvar no Supabase', 'error');
+        });
+
       renderPhotosList();
       updateAdminPanelCounters();
       showToast('Foto removida com sucesso!', 'success');
@@ -1359,9 +1364,11 @@ function getFinalImageUrl() {
         photos.splice(dropIndex, 0, draggedPhoto);
         
         // Salvar nova ordem no banco de dados
-        saveToSDK(currentMotoId, 'photos', photos);
-        
-        // Renderizar novamente
+        saveToSDK(currentMotoId, 'photos', photos)
+          .catch(function(err){
+            console.error('Falha ao salvar ordem:', err);
+            showToast('❌ Falha ao salvar ordem no Supabase', 'error');
+          });// Renderizar novamente
         renderPhotosList();
         updateAdminPanelCounters();
         showToast('✅ Ordem das fotos atualizada!', 'success');
