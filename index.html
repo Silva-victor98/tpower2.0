@@ -505,14 +505,22 @@
     alert("Cole a URL da imagem");
     return;
   }
+  // Salva como URL no Supabase (não usamos mais localStorage)
+  // Chave fixa do site: moto_id = "site", data_type = "main_image"
+  saveToSDK("site", "main_image", url).then(function(){
+    const img = document.getElementById("mainImage");
+    if (img) img.src = url;
+    alert("Imagem salva!");
+  });
+}
 
-  localStorage.setItem("foto_principal", url);
-  alert("Imagem salva!");
-}
-const img = document.getElementById("mainImage");
-if (img && localStorage.getItem("foto_principal")) {
-  img.src = localStorage.getItem("foto_principal");
-}
+(function(){
+  const img = document.getElementById("mainImage");
+  if (!img) return;
+  loadFromSDK("site", "main_image", null).then(function(val){
+    if (val) img.src = val;
+  });
+})(); 
 // Banco de dados completo das 30 motos
     const motosDatabase = {
       'cb500f': { name: 'CB 500F', brand: 'Honda', year: '2024', price: 'R$ 35.990', badge: 'NOVO', description: 'Motor 471cc, potência de 50cv. Ideal para o dia a dia.', specs: { motor: '471cc bicilíndrico', potencia: '47 cv @ 8.500 rpm', torque: '4,4 kgf.m @ 7.000 rpm' }, features: ['ABS de série', 'Painel LCD', 'Econômica'] },
@@ -621,12 +629,12 @@ function saveToSDK(motoId, dataType, value) {
 
 function loadFromSDK(motoId, dataType, fallback) {
   var sb = ensureBackendless();
-  // Só carrega do "banco" quando o painel estiver logado
-  if (!sb || !window.__ADMIN_LOGGED_IN) {
+  // Leitura é pública: o site precisa carregar os dados mesmo sem login admin.
+  if (!sb) {
     return Promise.resolve(fallback);
   }
 
-  // Cache simples (evita repetir requests se você abrir/fechar o painel rápido)
+// Cache simples (evita repetir requests se você abrir/fechar o painel rápido)
   window.__SDK_CACHE = window.__SDK_CACHE || {};
   var cacheKey = motoId + "::" + dataType;
   var now = Date.now();
