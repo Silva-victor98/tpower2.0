@@ -601,8 +601,13 @@ function ensureBackendless() {
 function saveToSDK(motoId, dataType, value) {
   var sb = ensureBackendless();
   // Só salva no "banco" quando o painel estiver logado
-  if (!sb || !window.__ADMIN_LOGGED_IN) {
-    return Promise.resolve(null);
+  if (!sb) {
+    showToast('❌ Supabase não inicializou (SDK).', 'error');
+    return Promise.reject(new Error('SUPABASE_NOT_READY'));
+  }
+  if (!window.__ADMIN_LOGGED_IN) {
+    showToast('🔒 Faça login no painel para salvar.', 'error');
+    return Promise.reject(new Error('ADMIN_NOT_LOGGED_IN'));
   }
 
   var row = {
@@ -670,6 +675,11 @@ const thumbnailStorage = {};
     const ADMIN_USER = 'admin';
     const ADMIN_PASS = 'tpower2024';
     window.__ADMIN_LOGGED_IN = false;
+    try {
+      if (sessionStorage.getItem('tpowermotos_admin') === '1') {
+        window.__ADMIN_LOGGED_IN = true;
+      }
+    } catch(e) {}
 
     function showAdminLogin() {
       document.getElementById('adminLoginModal').classList.remove('hidden');
@@ -690,6 +700,7 @@ const thumbnailStorage = {};
       
       if (username === ADMIN_USER && password === ADMIN_PASS) {
         window.__ADMIN_LOGGED_IN = true;
+        try { sessionStorage.setItem('tpowermotos_admin', '1'); } catch(e) {}
         window.__SDK_CACHE = {};
         closeAdminLogin();
         loadAdminPanel();
